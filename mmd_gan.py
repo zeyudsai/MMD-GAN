@@ -57,13 +57,12 @@ class NetD(nn.Module):
 class ONE_SIDED(nn.Module):
     def __init__(self):
         super(ONE_SIDED, self).__init__()
-
         main = nn.ReLU()
         self.main = main
 
     def forward(self, input):
         output = self.main(-input)
-        output = -output.mean()
+        output = -output.mean().view(1)  # 确保输出是一个一维张量
         return output
 
 
@@ -77,12 +76,14 @@ if args.experiment is None:
     args.experiment = 'samples'
 os.system('mkdir {0}'.format(args.experiment))
 
-if torch.cuda.is_available():
-    args.cuda = True
-    torch.cuda.set_device(args.gpu_device)
-    print("Using GPU device", torch.cuda.current_device())
+if torch.backends.mps.is_available():
+    device = torch.device("mps")
+    args.cuda = False
+    print("Using MPS device")
 else:
-    raise EnvironmentError("GPU device not available!")
+    device = torch.device("cpu")
+    args.cuda = False
+    print("Using CPU device")
 
 args.manual_seed = 1126
 np.random.seed(seed=args.manual_seed)
@@ -93,10 +94,13 @@ cudnn.benchmark = True
 
 # Get data
 trn_dataset = util.get_data(args, train_flag=True)
-trn_loader = torch.utils.data.DataLoader(trn_dataset,
-                                         batch_size=args.batch_size,
-                                         shuffle=True,
-                                         num_workers=int(args.workers))
+trn_loader = torch.utils.data.DataLoader(
+    trn_dataset,
+    batch_size=args.batch_size,
+    shuffle=True,
+    num_workers=0, 
+    pin_memory=True
+)
 
 # construct encoder/decoder modules
 hidden_dim = args.nz
@@ -121,13 +125,12 @@ sigma_list = [1, 2, 4, 8, 16]
 sigma_list = [sigma / base for sigma in sigma_list]
 
 # put variable into cuda device
-fixed_noise = torch.cuda.FloatTensor(64, args.nz, 1, 1).normal_(0, 1)
-one = torch.cuda.FloatTensor([1])
+fixed_noise = torch.randn(64, args.nz, 1, 1, device=device)
+one = torch.ones(1, device=device)
 mone = one * -1
-if args.cuda:
-    netG.cuda()
-    netD.cuda()
-    one_sided.cuda()
+netG = netG.to(device)
+netD = netD.to(device)
+one_sided = one_sided.to(device)
 fixed_noise = Variable(fixed_noise, requires_grad=False)
 
 # setup optimizer
@@ -168,17 +171,17 @@ for t in range(args.max_iter):
             for p in netD.encoder.parameters():
                 p.data.clamp_(-0.01, 0.01)
 
-            data = data_iter.next()
+            data = next(data_iter)
             i += 1
             netD.zero_grad()
 
             x_cpu, _ = data
-            x = Variable(x_cpu.cuda())
+            x = Variable(x_cpu.to(device))
             batch_size = x.size(0)
 
             f_enc_X_D, f_dec_X_D = netD(x)
 
-            noise = torch.cuda.FloatTensor(batch_size, args.nz, 1, 1).normal_(0, 1)
+            noise = torch.randn(batch_size, args.nz, 1, 1, device=device)
             noise = Variable(noise, volatile=True)  # total freeze netG
             y = Variable(netG(noise).data)
 
@@ -198,7 +201,8 @@ for t in range(args.max_iter):
             L2_AE_Y_D = util.match(y.view(batch_size, -1), f_dec_Y_D, 'L2')
 
             errD = torch.sqrt(mmd2_D) + lambda_rg * one_side_errD - lambda_AE_X * L2_AE_X_D - lambda_AE_Y * L2_AE_Y_D
-            errD.backward(mone)
+            errD = errD.view(-1)  # 添加这行来确保维度正确
+            errD.backward(mone.expand_as(errD))
             optimizerD.step()
 
         # ---------------------------
@@ -210,18 +214,21 @@ for t in range(args.max_iter):
         for j in range(Giters):
             if i == len(trn_loader):
                 break
-
-            data = data_iter.next()
+            try:
+                data = next(data_iter)
+            except StopIteration:
+                data_iter = iter(trn_loader)
+                data = next(data_iter)            
             i += 1
             netG.zero_grad()
 
             x_cpu, _ = data
-            x = Variable(x_cpu.cuda())
+            x = Variable(x_cpu.to(device))
             batch_size = x.size(0)
 
             f_enc_X, f_dec_X = netD(x)
 
-            noise = torch.cuda.FloatTensor(batch_size, args.nz, 1, 1).normal_(0, 1)
+            noise = torch.randn(batch_size, args.nz, 1, 1, device=device)
             noise = Variable(noise)
             y = netG(noise)
 
@@ -235,19 +242,20 @@ for t in range(args.max_iter):
             one_side_errG = one_sided(f_enc_X.mean(0) - f_enc_Y.mean(0))
 
             errG = torch.sqrt(mmd2_G) + lambda_rg * one_side_errG
-            errG.backward(one)
+            errG = errG.view(-1)  # 添加这行来确保维度正确
+            errG.backward(one.expand_as(errG))
             optimizerG.step()
 
             gen_iterations += 1
 
         run_time = (timeit.default_timer() - time) / 60.0
         print('[%3d/%3d][%3d/%3d] [%5d] (%.2f m) MMD2_D %.6f hinge %.6f L2_AE_X %.6f L2_AE_Y %.6f loss_D %.6f Loss_G %.6f f_X %.6f f_Y %.6f |gD| %.4f |gG| %.4f'
-              % (t, args.max_iter, i, len(trn_loader), gen_iterations, run_time,
-                 mmd2_D.data[0], one_side_errD.data[0],
-                 L2_AE_X_D.data[0], L2_AE_Y_D.data[0],
-                 errD.data[0], errG.data[0],
-                 f_enc_X_D.mean().data[0], f_enc_Y_D.mean().data[0],
-                 base_module.grad_norm(netD), base_module.grad_norm(netG)))
+            % (t, args.max_iter, i, len(trn_loader), gen_iterations, run_time,
+                mmd2_D.item(), one_side_errD.item(),
+                L2_AE_X_D.item(), L2_AE_Y_D.item(),
+                errD.item(), errG.item(),
+                f_enc_X_D.mean().item(), f_enc_Y_D.mean().item(),
+                base_module.grad_norm(netD), base_module.grad_norm(netG)))
 
         if gen_iterations % 500 == 0:
             y_fixed = netG(fixed_noise)

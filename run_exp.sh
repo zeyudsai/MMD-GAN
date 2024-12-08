@@ -1,8 +1,8 @@
 #!/bin/bash
 
-BS=64
+BS=32
 GPU_ID=0
-MAX_ITER=1000
+MAX_ITER=500
 DATA_PATH=./data
 
 if [ $1 == 'mnist' ]; then
@@ -37,7 +37,8 @@ fi
 EXP_FILE="${DATASET}_mmd-gan"
 LOG_FILE="${DATASET}_mmd-gan.log"
 
-cmd="stdbuf -o L python mmd_gan.py --dataset ${DATASET} --dataroot ${DATAROOT} --batch_size ${BS} --image_size ${ISIZE} --nc ${NC}  --nz ${NZ} --max_iter ${MAX_ITER} --gpu_device ${GPU_ID} --experiment ${EXP_FILE} | tee ${LOG_FILE}"
+cmd="python3 mmd_gan.py --dataset ${DATASET} --dataroot ${DATAROOT} --batch_size ${BS} --image_size ${ISIZE} --nc ${NC} --nz ${NZ} --max_iter ${MAX_ITER} --gpu_device ${GPU_ID} --experiment ${EXP_FILE} | tee ${LOG_FILE}"
+
 
 echo $cmd
 eval $cmd

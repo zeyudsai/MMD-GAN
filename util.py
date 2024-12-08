@@ -14,7 +14,7 @@ from os.path import join
 def get_args(parser):
     parser.add_argument('--dataset', required=True, help='mnist | cifar10 | cifar100 | lsun | imagenet | folder | lfw ')
     parser.add_argument('--dataroot', required=True, help='path to dataset')
-    parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
+    parser.add_argument('--workers', type=int, help='number of data loading workers', default=0)
     parser.add_argument('--batch_size', type=int, default=64, help='input batch size')
     parser.add_argument('--image_size', type=int, default=64, help='the height / width of the input image to network')
     parser.add_argument('--nc', type=int, default=3, help='number of channel')
@@ -67,17 +67,27 @@ class ALICropAndScale(object):
 
 
 def get_data(args, train_flag=True):
+    # 根据通道数设置normalize参数
+    if args.nc == 1:  # 单通道
+        normalize = transforms.Normalize((0.5,), (0.5,))
+    else:  # 三通道
+        normalize = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+
     transform = transforms.Compose([
-        transforms.Scale(args.image_size),
+        transforms.Resize(args.image_size),
         transforms.CenterCrop(args.image_size),
         transforms.ToTensor(),
-        transforms.Normalize(
-            (0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        normalize
     ])
 
     if args.dataset in ['imagenet', 'folder', 'lfw']:
         dataset = dset.ImageFolder(root=args.dataroot,
                                    transform=transform)
+    elif args.dataset == 'mnist':
+        dataset = dset.MNIST(root=args.dataroot,
+                             download=True,
+                             train=train_flag,
+                             transform=transform)
 
     elif args.dataset == 'lsun':
         dataset = dset.LSUN(db_path=args.dataroot,
@@ -95,13 +105,6 @@ def get_data(args, train_flag=True):
                                 download=True,
                                 train=train_flag,
                                 transform=transform)
-
-    elif args.dataset == 'mnist':
-        dataset = dset.MNIST(root=args.dataroot,
-                             download=True,
-                             train=train_flag,
-                             transform=transform)
-
     elif args.dataset == 'celeba':
         imdir = 'train' if train_flag else 'val'
         dataroot = os.path.join(args.dataroot, imdir)
